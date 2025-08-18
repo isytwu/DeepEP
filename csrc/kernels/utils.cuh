@@ -470,7 +470,7 @@ barrier_block(int** barrier_signal_ptrs, int rank) {
         __syncthreads();
     }
 
-    // Add self-ranks, sub other ranks
+    // Add self-ranks, sub other ranks 这里还是一个卡间barrier，去掉了move_fifo_slots
     if (thread_id < kNumRanks) {
         atomicAdd_system(barrier_signal_ptrs[rank] + thread_id, FINISHED_SUM_TAG);
         atomicSub_system(barrier_signal_ptrs[thread_id] + rank, FINISHED_SUM_TAG);

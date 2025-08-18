@@ -589,8 +589,8 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
     const auto thread_id = static_cast<int>(threadIdx.x);
     const auto sm_id = static_cast<int>(blockIdx.x), lane_id = get_lane_id();
     const auto num_channels = num_sms / 2;
-    const bool is_sender = sm_id % 2 == 0;
-    const int responsible_channel = sm_id / 2;
+    const bool is_sender = sm_id % 2 == 0;//偶数sm负责发
+    const int responsible_channel = sm_id / 2;//sm0负责chann0，sm2负责chann1
     EP_DEVICE_ASSERT(num_topk <= 32);
 
     constexpr int kDtypePerInt4 = sizeof(int4) / sizeof(dtype_t);
@@ -615,7 +615,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
         const auto send_thread_id = thread_id;
         const auto send_warp_id = send_thread_id / 32;
         const auto send_rank_id = (responsible_channel + send_warp_id) % kNumRanks;
-        const auto send_warp_id_in_rank = send_warp_id / kNumRanks;
+        const auto send_warp_id_in_rank = send_warp_id / kNumRanks; // 前kNumRanks warp的id为0
         EP_STATIC_ASSERT(num_send_warps * 32 == kNumThreads, "Invalid warp count");
 
         // Calculate pointers by the specific layout
@@ -641,7 +641,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
         int num_rank_tokens = rank_prefix_matrix[send_rank_id * kNumRanks + rank] - rank_offset;
         int channel_offset = channel_prefix_matrix[send_rank_id * num_channels + responsible_channel];
         int num_channel_tokens = (responsible_channel == num_channels - 1 ? num_rank_tokens : channel_prefix_matrix[send_rank_id * num_channels + responsible_channel + 1]) - channel_offset;
-        int token_start_idx = rank_offset + channel_offset, token_end_idx = rank_offset + channel_offset + num_channel_tokens;
+        int token_start_idx = rank_offset + channel_offset, token_end_idx = rank_offset + channel_offset + num_channel_tokens;//多个sm均分token
 
         // Iterate over all tokens and send by chunks
         int current_channel_tail_idx = 0;
@@ -665,7 +665,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
 
             // Send by chunk
             #pragma unroll
-            for (int i = send_warp_id_in_rank; i < num_round_tokens; i += num_send_warps_per_rank) {
+            for (int i = send_warp_id_in_rank; i < num_round_tokens; i += num_send_warps_per_rank) {//TODO 多个warp的send_warp_id_in_rank值相同？？？
                 // Get an empty slot
                 int dst_slot_idx = (current_channel_tail_idx + i) % num_recv_buffer_tokens;
 
@@ -710,7 +710,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
             channel_tail_idx[thread_id] = 0;
         asm volatile("bar.sync 0, %0;" :: "r"(kNumThreads));
 
-        if (thread_id < 32) {
+        if (thread_id < 32) {//留一个warp做同步？
             int* channel_head_idx_ptr = static_cast<int*>(buffer_ptrs[rank]) + responsible_channel * kNumRanks + lane_id;
             int* channel_tail_idx_ptr = channel_head_idx_ptr + num_channels * kNumRanks;
 
@@ -789,7 +789,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                     auto expected_head_i = __shfl_sync(0xffffffff, expected_head, i);
                     if (expected_head_i >= 0) {
                         slot_indices[num_topk_ranks] = expected_head_i % num_recv_buffer_tokens;
-                        topk_ranks[num_topk_ranks ++] = i;
+                        topk_ranks[num_topk_ranks ++] = i;//
                     }
                 }
 
@@ -800,7 +800,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                 __syncwarp();
 #endif
 
-                // Reduce data with pipeline
+                // Reduce data with pipeline 似乎没看到pipeline
                 constexpr int kNumStages = 8;
                 EP_STATIC_ASSERT(kNumStages * 32 * sizeof(int4) <= kNumTMABytesPerWarp, "Invalid count");
                 #pragma unroll
@@ -810,7 +810,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                     int4 bias_0_value_int4 = bias_0_int4 != nullptr ? __ldg(bias_0_int4 + token_idx * hidden_int4 + i) : make_int4(0, 0, 0, 0);
                     int4 bias_1_value_int4 = bias_1_int4 != nullptr ? __ldg(bias_1_int4 + token_idx * hidden_int4 + i) : make_int4(0, 0, 0, 0);
 
-                    // Read buffers
+                    // Read buffers 所有rank全都load出来
                     int4 recv_value_int4[kNumRanks];
                     #pragma unroll
                     for (int j = 0; j < num_topk_ranks; ++ j)
@@ -822,7 +822,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                     auto bias_1_values = reinterpret_cast<const dtype_t*>(&bias_1_value_int4);
                     #pragma unroll
                     for (int j = 0; j < kDtypePerInt4; ++ j)
-                        values[j] = static_cast<float>(bias_0_values[j]) + static_cast<float>(bias_1_values[j]);
+                        values[j] = static_cast<float>(bias_0_values[j]) + static_cast<float>(bias_1_values[j]);//这里要加两个bias
 
                     // Reduce all-to-all results
                     #pragma unroll
@@ -830,7 +830,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                         auto recv_value_dtypes = reinterpret_cast<const dtype_t*>(&recv_value_int4[j]);
                         #pragma unroll
                         for (int k = 0; k < kDtypePerInt4; ++ k)
-                            values[k] += static_cast<float>(recv_value_dtypes[k]);
+                            values[k] += static_cast<float>(recv_value_dtypes[k]);//转为float再计算
                     }
 
                     // Cast back to `dtype_t`
@@ -868,7 +868,7 @@ combine(dtype_t* recv_x, float* recv_topk_weights,
                 if (lane_id < num_topk) {
                     float value = 0;
                     #pragma unroll
-                    for (int i = 0; i < num_topk_ranks; ++ i)
+                    for (int i = 0; i < num_topk_ranks; ++ i)//
                         value += ld_nc_global(channel_topk_weights_buffers[topk_ranks[i]].buffer() + slot_indices[i] * num_topk + lane_id);
                     recv_topk_weights[token_idx * num_topk + lane_id] = value;
                 }

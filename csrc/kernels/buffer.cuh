@@ -34,7 +34,7 @@ public:
         return buffer()[idx];
     }
 };
-
+//SymBuffer应该是nvshmem创建的，asymBuffer不是
 template <typename dtype_t, int kNumRanks = 1>
 struct AsymBuffer {
 private:
@@ -86,7 +86,7 @@ public:
         return *this;
     }
 
-    __device__ __forceinline__ dtype_t* buffer(int idx = 0) {
+    __device__ __forceinline__ dtype_t* buffer(int idx = 0) {//这里和send_buffer差不多，idx是rank
         EP_STATIC_ASSERT(kNumRanks == 1, "`buffer` is only available for single rank case");
         return reinterpret_cast<dtype_t*>(ptrs[0] + num_bytes * idx);
     }
@@ -119,7 +119,7 @@ public:
         gbl_ptr = reinterpret_cast<uint8_t*>(gbl_ptr) + total_bytes;
     }
 
-    __device__ __forceinline__ dtype_t* send_buffer(int idx = 0) {
+    __device__ __forceinline__ dtype_t* send_buffer(int idx = 0) {//idx基本就是rank号
         EP_STATIC_ASSERT(kDecoupled, "`send_buffer` is only available for non-decoupled case");
         return reinterpret_cast<dtype_t*>(send_ptr + num_bytes * idx);
     }

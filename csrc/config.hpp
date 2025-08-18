@@ -42,7 +42,7 @@ struct Config {
         EP_HOST_ASSERT(num_max_rdma_chunked_send_tokens <= num_max_rdma_chunked_recv_tokens / 2);
     }
 
-    size_t get_nvl_buffer_size_hint(size_t hidden_bytes, int num_ranks) const {
+    size_t get_nvl_buffer_size_hint(size_t hidden_bytes, int num_ranks) const {//算显存？
         // Below are some assumptions
         // TODO: add assertions
         constexpr int kNumMaxTopK = 128;

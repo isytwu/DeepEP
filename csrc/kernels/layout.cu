@@ -10,11 +10,11 @@ template <int kNumThreads, int kNumExpertsPerSM, int kNumRanksPerSM>
 __global__ void get_dispatch_layout(const int64_t* topk_idx,
                                     int* num_tokens_per_rank, int* num_tokens_per_rdma_rank,
                                     int* num_tokens_per_expert, bool* is_token_in_rank,
-                                    int num_tokens, int num_topk, int num_ranks, int num_experts) {
+                                    int num_tokens, int num_topk, int num_ranks, int num_experts) {//当前rank，对于topk_idx获取的发送信息
     auto sm_id = static_cast<int>(blockIdx.x);
     auto thread_id = static_cast<int>(threadIdx.x);
 
-    // Count expert statistics
+    // Count expert statistics 改了 都放shmem了？
     __shared__ int num_tokens_per_expert_per_thread[kNumThreads][kNumExpertsPerSM];
     int expert_begin_idx = sm_id * kNumExpertsPerSM, expert_end_idx = min(expert_begin_idx + kNumExpertsPerSM, num_experts);
     if (expert_begin_idx < expert_end_idx) {

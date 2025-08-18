@@ -141,7 +141,7 @@ def get_buffer(group: dist.ProcessGroup, hidden_bytes: int) -> Buffer:
     # NOTES: you may also replace `get_*_config` with your auto-tuned results via all the tests
     num_nvl_bytes, num_rdma_bytes = 0, 0
     for config in (Buffer.get_dispatch_config(group.size()), Buffer.get_combine_config(group.size())):
-        num_nvl_bytes = max(config.get_nvl_buffer_size_hint(hidden_bytes, group.size()), num_nvl_bytes)
+        num_nvl_bytes = max(config.get_nvl_buffer_size_hint(hidden_bytes, group.size()), num_nvl_bytes)#这里是获取可用的内存？
         num_rdma_bytes = max(config.get_rdma_buffer_size_hint(hidden_bytes, group.size()), num_rdma_bytes)
 
     # Allocate a buffer if not existed or not enough buffer size
