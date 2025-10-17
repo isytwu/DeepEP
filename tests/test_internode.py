@@ -29,10 +29,10 @@ def test_main(args: argparse.Namespace, num_sms: int,
     x_pure_rand = torch.randn((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
     x_e4m3 = per_token_cast_to_fp8(x)
     x_e4m3 = (x_e4m3[0], x_e4m3[1].T.contiguous().T)
-    scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1
-    group_scores = scores.view(num_tokens, num_nodes, -1).amax(dim=-1)
-    group_idx = torch.topk(group_scores, k=num_topk_groups, dim=-1, sorted=False).indices
-    masked_scores = create_grouped_scores(scores, group_idx, num_nodes)
+    scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1 #随机分数
+    group_scores = scores.view(num_tokens, num_nodes, -1).amax(dim=-1) #-1表示自动推断该维度大小，view得到维度为[num_tokens, num_nodes, experts_per_node]，amax在最后一个维度上取max分数得到维度为[num_tokens, num_nodes]
+    group_idx = torch.topk(group_scores, k=num_topk_groups, dim=-1, sorted=False).indices # 选出score最大的num_topk_groups个node
+    masked_scores = create_grouped_scores(scores, group_idx, num_nodes)#只保留group_idx对应的node的expert的score
     topk_idx = torch.topk(masked_scores, num_topk, dim=-1, largest=True, sorted=False)[1]
     topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float32, device='cuda') * rank
     topk_weights_pure_rand = torch.randn((num_tokens, num_topk), dtype=torch.float32, device='cuda')
@@ -47,7 +47,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
     rdma_idx = topk_idx // (num_experts // num_nodes)
     rdma_idx.masked_fill_(topk_idx == -1, -1)
     inplace_unique(rdma_idx, num_nodes)
-    num_rdma_token_sent = rdma_idx.ne(-1).sum().item()
+    num_rdma_token_sent = rdma_idx.ne(-1).sum().item()#pxn发给不同node的token总数
 
     # Expert meta
     num_tokens_per_expert = torch.zeros((num_experts, ), dtype=torch.int, device='cuda')
@@ -180,7 +180,7 @@ def test_main(args: argparse.Namespace, num_sms: int,
     for current_x in (x_e4m3, x):
         best_time, best_results = 1e10, None
         rdma_send_bytes = (dispatch_bf16_rdma_send_bytes * fp8_factor) if isinstance(current_x, tuple) else dispatch_bf16_rdma_send_bytes
-        nvl_recv_bytes = (dispatch_bf16_nvl_recv_bytes * fp8_factor) if isinstance(current_x, tuple) else dispatch_bf16_nvl_recv_bytes
+        nvl_recv_bytes = (dispatch_bf16_nvl_recv_bytes * fp8_factor) if isinstance(current_x, tuple) else dispatch_bf16_nvl_recv_bytes# 收到的token总数
         for nvl_chunk_size in range(4, 45, 4):
             for rdma_chunk_size in range(4, 33, 4):
                 config = deep_ep.Config(num_sms, nvl_chunk_size, nvl_buffer_size, rdma_chunk_size, rdma_buffer_size)

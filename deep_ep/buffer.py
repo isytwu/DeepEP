@@ -465,7 +465,7 @@ class Buffer:
             handle = (is_token_in_rank,
                       rdma_channel_prefix_matrix, gbl_channel_prefix_matrix,
                       recv_rdma_channel_prefix_matrix, recv_rdma_rank_prefix_sum, recv_gbl_channel_prefix_matrix, recv_gbl_rank_prefix_sum,
-                      recv_src_meta, send_rdma_head, send_nvl_head)
+                      recv_src_meta, send_rdma_head, send_nvl_head)#构造handle
             return (recv_x, recv_x_scales) if x_scales is not None else recv_x, recv_topk_idx, recv_topk_weights, num_recv_tokens_per_expert_list, handle, EventOverlap(event)
 
     # noinspection PyTypeChecker
@@ -486,7 +486,7 @@ class Buffer:
         is_combined_token_in_rank, \
             _, _, \
             rdma_channel_prefix_matrix, rdma_rank_prefix_sum, gbl_channel_prefix_matrix, gbl_rank_prefix_sum, \
-            src_meta, send_rdma_head, send_nvl_head = handle
+            src_meta, send_rdma_head, send_nvl_head = handle#gbl_channel_prefix_matrix 是从 handle 中解包出来的；注意第三个参数也就是gbl_channel_prefix_matrix根本就没收
         bias_0, bias_1 = Buffer._unpack_bias(bias)
 
         # Launch the kernel

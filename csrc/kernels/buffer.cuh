@@ -34,7 +34,7 @@ public:
         return buffer()[idx];
     }
 };
-//SymBuffer应该是nvshmem创建的，asymBuffer不是
+//SymBuffer应该是nvshmem创建的（用于RDMA），asymBuffer不是（用于nvlink）；
 template <typename dtype_t, int kNumRanks = 1>
 struct AsymBuffer {
 private:

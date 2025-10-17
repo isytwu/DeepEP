@@ -896,7 +896,7 @@ Buffer::internode_dispatch(const torch::Tensor& x, const std::optional<torch::Te
         event = EventHandle(comm_stream);
         for (auto& t: {x, is_token_in_rank, recv_x,
                        rdma_channel_prefix_matrix, recv_rdma_rank_prefix_sum, gbl_channel_prefix_matrix, recv_gbl_rank_prefix_sum}) {
-            t.record_stream(comm_stream);
+            t.record_stream(comm_stream); // 防止 tensor 在该 stream 的操作完成之前被回收!TODO
             if (allocate_on_comm_stream)
                 t.record_stream(compute_stream);
         }
@@ -953,7 +953,7 @@ Buffer::internode_combine(const torch::Tensor& x, const std::optional<torch::Ten
     EP_HOST_ASSERT(combined_nvl_head.dim() == 2 and combined_nvl_head.is_contiguous() and combined_nvl_head.scalar_type() == torch::kInt32);
 
     auto num_tokens = static_cast<int>(x.size(0)), hidden = static_cast<int>(x.size(1)), hidden_int4 = static_cast<int>(x.size(1) * x.element_size() / sizeof(int4));
-    auto num_combined_tokens = static_cast<int>(is_combined_token_in_rank.size(0));
+    auto num_combined_tokens = static_cast<int>(is_combined_token_in_rank.size(0));//
     EP_HOST_ASSERT((hidden * x.element_size()) % sizeof(int4) == 0);
     EP_HOST_ASSERT(src_meta.size(1) == internode::get_source_meta_bytes());
     EP_HOST_ASSERT(is_combined_token_in_rank.size(1) == num_ranks);
@@ -997,7 +997,7 @@ Buffer::internode_combine(const torch::Tensor& x, const std::optional<torch::Ten
     EP_HOST_ASSERT(config.num_max_nvl_chunked_recv_tokens % num_rdma_ranks == 0);
     EP_HOST_ASSERT(config.num_max_nvl_chunked_send_tokens <= config.num_max_nvl_chunked_recv_tokens / num_rdma_ranks);
 
-    // Launch barrier and reset queue head and tail
+    // Launch barrier and reset queue head and tail 原来是专门reset head tail的
     internode::cached_notify(hidden_int4, 0, 0, num_topk,
                              num_ranks, num_channels,
                              num_combined_tokens, combined_rdma_head.data_ptr<int>(),
@@ -1020,7 +1020,7 @@ Buffer::internode_combine(const torch::Tensor& x, const std::optional<torch::Ten
     }
 
     // Launch data combine
-    auto combined_x = torch::empty({num_combined_tokens, hidden}, x.options());
+    auto combined_x = torch::empty({num_combined_tokens, hidden}, x.options()); // 这里很清楚了，combined_x是输出，num_combined_tokens其实和dispatch的num_tokens相同
     internode::combine(at::cuda::ScalarTypeToCudaDataType(x.scalar_type()),
                        combined_x.data_ptr(), combined_topk_weights_ptr,
                        is_combined_token_in_rank.data_ptr<bool>(),
