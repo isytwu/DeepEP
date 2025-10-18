@@ -33,7 +33,7 @@ torch::Event create_event(const at::cuda::CUDAStream &s) {
 
 void stream_wait(const at::cuda::CUDAStream& s_0, const at::cuda::CUDAStream& s_1) {
     EP_HOST_ASSERT(s_0.id() != s_1.id());
-    s_0.unwrap().wait(create_event(s_1));
+    s_0.unwrap().wait(create_event(s_1)); // unwrap() 是 PyTorch CUDA Stream 的一个方法，用于获取底层的原生 CUDA stream 对象。
 }
 
 void stream_wait(const at::cuda::CUDAStream& s, const EventHandle& event) {

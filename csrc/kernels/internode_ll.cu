@@ -58,17 +58,17 @@ dispatch(void* packed_recv_x, void* packed_recv_x_scales,
     const auto num_local_experts = num_experts / num_ranks;
     const auto warp_group_id = warp_id / num_warps_per_group;
     const auto sub_warp_id = warp_id % num_warps_per_group;
-    const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;
+    const auto responsible_expert_idx = sm_id * num_warp_groups + warp_group_id;//SM的一组warp对应一个EP
 
     // May extract UE8M0 from the scales
-    using scale_t = std::conditional_t<kUseUE8M0, uint8_t, float>;
+    using scale_t = std::conditional_t<kUseUE8M0, uint8_t, float>; //量化策略 UE8M0 模式 和 标准模式
     using packed_t = std::conditional_t<kUseUE8M0, uint32_t, float>;
     EP_STATIC_ASSERT(sizeof(packed_t) % sizeof(scale_t) == 0, "Invalid vector length");
 
     // FP8 staffs
     constexpr int kNumPerChannels = 128;
-    const int num_scales = kHidden / kNumPerChannels;
-    const size_t hidden_bytes = kHidden * (kUseFP8 ? sizeof(__nv_fp8_storage_t) : sizeof(nv_bfloat16));
+    const int num_scales = kHidden / kNumPerChannels;// kHidden 是隐藏层维度大小
+    const size_t hidden_bytes = kHidden * (kUseFP8 ? sizeof(__nv_fp8_storage_t) : sizeof(nv_bfloat16)); // kUseFP8 是否启用FP8量化；__nv_fp8_storage_t是uint8_t
     const size_t hidden_int4 = hidden_bytes / sizeof(int4);
 
     // Message package: hidden data, FP8 scales, index at source

@@ -1098,7 +1098,7 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
 
     // Tensor checks
     // By default using `ptp128c` FP8 cast
-    EP_HOST_ASSERT(x.dim() == 2 and x.is_contiguous() and x.scalar_type() == torch::kBFloat16);
+    EP_HOST_ASSERT(x.dim() == 2 and x.is_contiguous() and x.scalar_type() == torch::kBFloat16);//输入只支持BF16？
     EP_HOST_ASSERT(x.size(1) % sizeof(int4) == 0 and x.size(1) % 128 == 0);
     EP_HOST_ASSERT(topk_idx.dim() == 2 and topk_idx.is_contiguous());
     EP_HOST_ASSERT(x.size(0) == topk_idx.size(0) and x.size(0) <= num_max_dispatch_tokens_per_rank);
@@ -1118,19 +1118,19 @@ Buffer::low_latency_dispatch(const torch::Tensor& x, const torch::Tensor& topk_i
     LowLatencyLayout layout(rdma_buffer_ptr, num_max_dispatch_tokens_per_rank, hidden, num_ranks, num_experts);
     EP_HOST_ASSERT(layout.total_bytes <= num_rdma_bytes);
     auto buffer = layout.buffers[low_latency_buffer_idx];
-    auto next_buffer = layout.buffers[low_latency_buffer_idx ^= 1];
+    auto next_buffer = layout.buffers[low_latency_buffer_idx ^= 1]; // 在这里对low_latency_buffer_idx进行翻转
 
     // Wait previous tasks to be finished
     // NOTES: the hook mode will always use the default stream
     auto compute_stream = at::cuda::getCurrentCUDAStream();
-    auto launch_stream = return_recv_hook ? compute_stream : comm_stream;
-    EP_HOST_ASSERT(not (async and return_recv_hook));
+    auto launch_stream = return_recv_hook ? compute_stream : comm_stream;//看来compute stream用的就是default stream
+    EP_HOST_ASSERT(not (async and return_recv_hook));//同步：hook必须同步执行
     if (not return_recv_hook)
-        stream_wait(launch_stream, compute_stream);
+        stream_wait(launch_stream, compute_stream); // 异步：等compute_stream完毕（之后通信 计算可以overlap？）
 
     // Allocate packed tensors
     auto packed_recv_x = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden},
-                                      x.options().dtype(use_fp8 ? torch::kFloat8_e4m3fn: torch::kBFloat16));
+                                      x.options().dtype(use_fp8 ? torch::kFloat8_e4m3fn : torch::kBFloat16)); // 输出支持FP8和BF16两种，这个use_fp8表示的是输出而不是输入？
     auto packed_recv_src_info = torch::empty({num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank}, torch::dtype(torch::kInt32).device(torch::kCUDA));
     auto packed_recv_layout_range = torch::empty({num_local_experts, num_ranks}, torch::dtype(torch::kInt64).device(torch::kCUDA));
     auto packed_recv_count = torch::empty({num_local_experts}, torch::dtype(torch::kInt32).device(torch::kCUDA));

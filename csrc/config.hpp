@@ -112,8 +112,8 @@ struct LowLatencyBuffer {
     size_t num_bytes_per_combine_msg = 0;
 
     std::pair<int*, int> clean_meta() {
-        EP_HOST_ASSERT(dispatch_rdma_recv_count_buffer == combine_rdma_recv_flag_buffer);
-        return {dispatch_rdma_recv_count_buffer, num_clean_int};
+        EP_HOST_ASSERT(dispatch_rdma_recv_count_buffer == combine_rdma_recv_flag_buffer); // 确保 dispatch 和 combine 的信号缓冲区是同一块内存
+        return {dispatch_rdma_recv_count_buffer, num_clean_int};                          // 返回需要清理的缓冲区指针和元素数量
     }
 };
 
@@ -137,7 +137,7 @@ struct LowLatencyLayout {
         // Message sizes
         // NOTES: you should add a control `int4` for combine messages if you want to do data transformation
         EP_HOST_ASSERT(num_scales * sizeof(float) <= hidden);
-        size_t num_bytes_per_dispatch_msg = sizeof(int4) + std::max(hidden * sizeof(nv_bfloat16), hidden + num_scales * sizeof(float));
+        size_t num_bytes_per_dispatch_msg = sizeof(int4) + std::max(hidden * sizeof(nv_bfloat16), hidden + num_scales * sizeof(float));//max(BF16模式，FP8模式)
         size_t num_bytes_per_combine_msg = hidden * sizeof(nv_bfloat16);
 
         // Send buffer
