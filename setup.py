@@ -7,6 +7,20 @@ from pathlib import Path
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
+def is_rocm_environment():
+    if os.environ.get('DEEP_EP_BACKEND', '').lower() == 'rocm':
+        return True
+    try:
+        import torch
+        if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+            return True
+    except:
+        pass
+    if os.environ.get('ROCM_PATH') or os.environ.get('HIP_PATH'):
+        return True
+    return False
+
+
 # Wheel specific: the wheels only include the soname of the host library `libnvshmem_host.so.X`
 def get_nvshmem_host_lib_name(base_dir):
     path = Path(base_dir).joinpath('lib')
@@ -16,6 +30,32 @@ def get_nvshmem_host_lib_name(base_dir):
 
 
 if __name__ == '__main__':
+    if is_rocm_environment():
+        print('=' * 80)
+        print('ROCm environment detected - installing as pure Python package')
+        print('Skipping C++ compilation. Make sure mori is installed.')
+        print('=' * 80)
+        
+        try:
+            import mori
+            print(f'mori library found: {mori.__file__}')
+        except ImportError:
+            print('Warning: mori library not found. Please install mori before using DeepEP.')
+        
+        try:
+            cmd = ['git', 'rev-parse', '--short', 'HEAD']
+            revision = '+' + subprocess.check_output(cmd).decode('ascii').rstrip()
+        except Exception:
+            revision = ''
+        
+        setuptools.setup(
+            name='deep_ep',
+            version='1.2.1' + revision,
+            packages=setuptools.find_packages(include=['deep_ep']),
+            install_requires=['torch'],
+        )
+        exit(0)
+    
     disable_nvshmem = False
     nvshmem_dir = os.getenv('NVSHMEM_DIR', None)
     nvshmem_host_lib = 'libnvshmem_host.so'

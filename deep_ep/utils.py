@@ -4,7 +4,24 @@ import torch.distributed as dist
 from typing import Any, Optional, Tuple
 
 # noinspection PyUnresolvedReferences
-from deep_ep_cpp import EventHandle
+try:
+    from deep_ep_cpp import EventHandle
+except Exception:  # pragma: no cover - fallback for ROCm/mori backend
+    try:
+        from mori.cpp import EventHandle
+    except Exception:
+        class EventHandle:
+            """
+            Fallback EventHandle backed by torch.cuda.Event for ROCm/mori backend.
+            """
+            def __init__(self) -> None:
+                self._event = torch.cuda.Event()
+
+            def record(self) -> None:
+                self._event.record()
+
+            def current_stream_wait(self) -> None:
+                torch.cuda.current_stream().wait_event(self._event)
 
 
 class EventOverlap:
