@@ -33,13 +33,6 @@ class BufferROCm:
 
     num_sms: int = 20
     MAX_GPU_PER_NODE: int = 8
-    
-    # Class variables to store parameters from get_low_latency_rdma_size_hint
-    _saved_num_tokens: int = 0
-    _saved_hidden: int = 0
-    _saved_num_ranks: int = 0
-    _saved_num_experts: int = 0
-    _saved_num_topk: int = 8  # hardcoded for now
 
     def __init__(self,
                  group: Optional[dist.ProcessGroup],
@@ -115,23 +108,6 @@ class BufferROCm:
         self.mori_op = None
         self.mori_config = None
         self._mori_config_key = None
-        # if (BufferROCm._saved_num_tokens > 0 and BufferROCm._saved_hidden > 0 and 
-        #     BufferROCm._saved_num_experts > 0):
-            # # Hardcode kernel settings here (do not change function signature)
-            # kernel_type = mori.ops.EpDispatchCombineKernelType.IntraNode
-            # block_num = 64
-            # warp_num_per_block = 16
-            # rdma_block_num = 0
-            # self._ensure_mori_op(
-            #     BufferROCm._saved_num_tokens,
-            #     BufferROCm._saved_hidden,
-            #     BufferROCm._saved_num_experts,
-            #     BufferROCm._saved_num_topk,
-            #     kernel_type,
-            #     block_num,
-            #     warp_num_per_block,
-            #     rdma_block_num,
-            # )
 
     def _ensure_mori_op(self,
                         num_tokens: int,
@@ -225,11 +201,8 @@ class BufferROCm:
         Returns:
             size: the RDMA buffer size recommended.
         """
-        # Save parameters for later use in __init__
-        BufferROCm._saved_num_tokens = num_max_dispatch_tokens_per_rank
-        BufferROCm._saved_hidden = hidden
-        BufferROCm._saved_num_ranks = num_ranks
-        BufferROCm._saved_num_experts = num_experts
+        # For mori, we don't need to return a size hint
+        return 0
         
         # Conservative estimate for mori
         return (num_max_dispatch_tokens_per_rank * hidden * num_ranks * 4) * 4  # 4 bytes per element
@@ -560,13 +533,36 @@ class BufferROCm:
         """
         Low-latency dispatch using mori backend.
         """
+        # Mori backend only supports FP16/BF16 synchronous path
+        unsupported = []
+        if use_fp8:
+            unsupported.append('use_fp8')
+        if round_scale:
+            unsupported.append('round_scale')
+        if use_ue8m0:
+            unsupported.append('use_ue8m0')
+        if async_finish:
+            unsupported.append('async_finish')
+        if return_recv_hook:
+            unsupported.append('return_recv_hook')
+        if unsupported:
+            unsupported_str = ', '.join(unsupported)
+            raise NotImplementedError(
+                f'Mori backend does not support: {unsupported_str}. '
+                'Only FP16/BF16 synchronous dispatch is supported.'
+            )
+
         num_tokens, hidden = x.shape
         num_topk = topk_idx.shape[1]
-        # Hardcode kernel settings here (do not change function signature)
-        kernel_type = mori.ops.EpDispatchCombineKernelType.IntraNode
-        block_num = 64
-        warp_num_per_block = 16
-        rdma_block_num = 0
+        if self.group_size <= BufferROCm.MAX_GPU_PER_NODE:
+            kernel_type = mori.ops.EpDispatchCombineKernelType.IntraNode
+            block_num, warp_num_per_block = 64, 16
+            rdma_block_num = 0
+        else:
+            kernel_type = mori.ops.EpDispatchCombineKernelType.InterNodeV1LL
+            block_num, warp_num_per_block = 64, 8
+            rdma_block_num = 32
+
         self._ensure_mori_op(
             num_max_dispatch_tokens_per_rank,
             hidden,
@@ -577,26 +573,22 @@ class BufferROCm:
             warp_num_per_block,
             rdma_block_num,
         )
-        num_local_experts = num_experts // self.group_size
-        max_tokens_per_expert = num_max_dispatch_tokens_per_rank * self.group_size
-        
-        # Mori doesn't support FP8
-        if use_fp8:
-            raise NotImplementedError("FP8 is not supported in mori backend")
         
         # Call mori dispatch (topk_weights can be None)
-        # Returns: (dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count)
         dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count = \
-            self.mori_op.dispatch(x, topk_weights, None, topk_idx, 64, 16)
-        
+            self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
+        # print(f"[Rank {self.rank}] dispatch_out_count: {dispatch_out_count}")
         packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
             self.mori_op.convert_dispatch_output(
-                dispatch_out_x, dispatch_out_topk_idx, 64, 16
+                dispatch_out_x, dispatch_out_topk_idx, 80, 16
             )
+        
+        # packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
+        #     self.mori_op.dispatch_standard_moe(x, topk_weights, None, topk_idx, 64, 16)
         
         # Create handle for combine (store necessary info)
         handle = (packed_recv_src_info, packed_recv_layout_range,
-                  num_max_dispatch_tokens_per_rank, x.size(1), num_experts, dispatch_out_topk_idx, dispatch_out_topk_weights)
+                  num_max_dispatch_tokens_per_rank, x.size(1), num_experts)
         tensors_to_record = (x, topk_idx, packed_recv_x, packed_recv_count, packed_recv_src_info,
                              packed_recv_layout_range)
         
@@ -615,17 +607,37 @@ class BufferROCm:
         """
         Low-latency combine using mori backend.
         """
-       
+        unsupported = []
+        if use_logfmt:
+            unsupported.append('use_logfmt')
+        if async_finish:
+            unsupported.append('async_finish')
+        if return_recv_hook:
+            unsupported.append('return_recv_hook')
+        if out is not None:
+            unsupported.append('out')
+        if combine_wait_recv_cost_stats is not None:
+            unsupported.append('combine_wait_recv_cost_stats')
+        if unsupported:
+            unsupported_str = ', '.join(unsupported)
+            raise NotImplementedError(
+                f'Mori backend does not support: {unsupported_str}. '
+                'Only synchronous combine without extra outputs is supported.'
+            )
+
         # Convert packed 3D input into mori combine input (2D)
         packed_recv_src_info = handle[0]
         packed_recv_layout_range = handle[1]
-        packed_recv_topk_idx = handle[5]
-        packed_recv_topk_weights = handle[6]
         combine_input = self.mori_op.convert_combine_input(
-            x, packed_recv_topk_idx, packed_recv_src_info, packed_recv_layout_range, packed_recv_topk_weights, 64, 4
+            x, packed_recv_src_info, packed_recv_layout_range, 80, 16
         )
 
-        combined_x, _ = self.mori_op.combine(combine_input, None, topk_idx, 64, 4)
+        if self.group_size <= BufferROCm.MAX_GPU_PER_NODE:
+            combine_block_num, combine_warp_per_block = 64, 4
+        else:
+            combine_block_num, combine_warp_per_block = 64, 8
+
+        combined_x, _ = self.mori_op.combine(combine_input, None, topk_idx, combine_block_num, combine_warp_per_block)
         
         # Create event and hook
         hook = lambda: None  # Dummy hook for compatibility
@@ -657,5 +669,6 @@ class BufferROCm:
         """
         Get the raw registered RDMA buffer tensor for next low-latency combine.
         """
-        # Not implemented for mori
-        raise NotImplementedError("get_next_low_latency_combine_buffer not implemented for mori backend")
+        # return self.mori_op.get_registered_combine_input_buffer(self.mori_config.data_type, True)
+        raise NotImplementedError("low_latency_clean_mask_buffer not implemented for mori backend")
+

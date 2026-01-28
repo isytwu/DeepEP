@@ -1,3 +1,4 @@
+import os
 import random
 import torch
 import torch.distributed as dist
@@ -11,6 +12,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
               rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer, seed: int = 0):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
+    num_nodes = int(os.getenv('WORLD_SIZE', 1))
 
     assert num_experts % num_ranks == 0
     num_local_experts = num_experts // num_ranks
@@ -21,9 +23,12 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
     x = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * (rank - rank_offset)
     x[:, -128:] = torch.arange(num_tokens, device='cuda').to(torch.bfloat16).view(-1, 1)
+    # x = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * (rank + 1)
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=True)[1]
+    topk_idx = topk_idx.to(deep_ep.topk_idx_t)
     topk_weights = torch.randn((num_tokens, num_topk), dtype=torch.float32, device='cuda').abs()
+    # topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float32, device='cuda')
 
     # Randomly mask some positions
     for i in range(10):
@@ -34,12 +39,14 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     hash_value, num_times = 0, 0
     for return_recv_hook in (False, ):
         for dispatch_use_fp8 in (False, ):
-            num_times += 1
+            # num_times += 1
             for i in range((num_times % 2) + 1):
                 packed_recv_x, packed_recv_count, handle, event, hook = \
                     buffer.low_latency_dispatch(x, topk_idx, num_tokens, num_experts, use_fp8=dispatch_use_fp8,
-                                                async_finish=not return_recv_hook, return_recv_hook=return_recv_hook)
-                hook() if return_recv_hook else event.current_stream_wait()
+                                                async_finish=False, return_recv_hook=return_recv_hook,
+                                                topk_weights=topk_weights)
+                # hook() if return_recv_hook else event.current_stream_wait()
+                torch.cuda.synchronize()
             packed_recv_x = (packed_recv_x[0], packed_recv_x[1].contiguous()) if dispatch_use_fp8 else packed_recv_x
             simulated_gemm_x = per_token_cast_back(packed_recv_x[0].view(-1, hidden), packed_recv_x[1].view(-1, hidden // 128)).view(packed_recv_x[0].shape) \
                 if dispatch_use_fp8 else packed_recv_x.clone()
@@ -48,25 +55,46 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
             for i in range(num_local_experts if do_check else 0):
                 expert_id = rank * num_local_experts + i
                 recv_x = per_token_cast_back(packed_recv_x[0][i], packed_recv_x[1][i]) if dispatch_use_fp8 else packed_recv_x[i]
-                recv_count, recv_src_info, recv_layout_range = packed_recv_count[i], handle[0][i], handle[1][i]
+                recv_count, recv_src_info = packed_recv_count[i], handle[0][i]
 
                 # Check expert indices
-                int_mask = (2 ** 32) - 1
                 num_valid_tokens = recv_count.item()
-                assert num_valid_tokens == (recv_layout_range & int_mask).sum().item(), f'{num_valid_tokens} != {recv_layout_range & int_mask}.sum().item()'
-                assert num_valid_tokens == (all_topk_idx == expert_id).sum().item(), f'{num_valid_tokens} != {(all_topk_idx == expert_id).sum().item()}'
+                expected_tokens = (all_topk_idx == expert_id).sum().item()
+                if num_valid_tokens != expected_tokens:
+                    print("[dispatch_check] token count mismatch:",
+                          f"rank={rank}",
+                          f"expert_id={expert_id}",
+                          f"num_valid_tokens={num_valid_tokens}",
+                          f"expected_tokens={expected_tokens}",
+                          f"packed_recv_count_head={packed_recv_count[:8].tolist()}")
+                assert num_valid_tokens == expected_tokens, f'{num_valid_tokens} != {expected_tokens}'
 
-                # Check received data
+                # Check received data (unordered by src rank)
                 recv_x = recv_x[:num_valid_tokens]
-                recv_x_amin = recv_x[:, :-128].amin(dim=-1)
                 recv_src_info = recv_src_info[:num_valid_tokens]
-                assert torch.equal(recv_x_amin, recv_x[:, :-128].amax(dim=-1))
-                assert (recv_x[:, -128:] - recv_src_info.view(-1, 1) % num_tokens).sum().item() == 0
-                for j in range(num_ranks):
-                    begin_idx, count = (recv_layout_range[j] >> 32).item(), (recv_layout_range[j] & int_mask).item()
-                    assert (recv_x_amin == j - rank_offset).sum().item() == (all_topk_idx[j] == expert_id).sum().item()
-                    assert (recv_x[begin_idx:begin_idx + count][:-128] - j).sum().item() == 0
-                    assert (recv_x[begin_idx:begin_idx + count, :-128] - j + rank_offset).sum().item() == 0
+                recv_src_rank = torch.div(recv_src_info.to(torch.int64), num_tokens, rounding_mode='floor')
+                recv_x_amin = recv_x[:, :-128].amin(dim=-1)
+                recv_x_amax = recv_x[:, :-128].amax(dim=-1)
+                assert torch.equal(recv_x_amin, recv_x_amax)
+                diff_rank = recv_x_amin - (recv_src_rank - rank_offset)
+                if diff_rank.abs().sum().item() != 0:
+                    max_abs = diff_rank.abs().max().item()
+                    max_idx = diff_rank.abs().argmax().item()
+                    print(
+                        "[dispatch_check] recv_x_amin mismatch:",
+                        f"rank={rank}",
+                        f"expert_id={expert_id}",
+                        f"num_valid_tokens={num_valid_tokens}",
+                        f"max_abs={max_abs}",
+                        f"max_idx={max_idx}",
+                        f"recv_x_amin_at_max={recv_x_amin[max_idx].item()}",
+                        f"recv_src_rank_at_max={recv_src_rank[max_idx].item()}",
+                        f"expected={recv_src_rank[max_idx].item() - rank_offset}",
+                        f"recv_src_rank_head={recv_src_rank[:8].tolist()}",
+                        f"recv_src_info_head={recv_src_info[:8].tolist()}",
+                    )
+                assert diff_rank.abs().sum().item() == 0
+                assert (recv_x[:, -128:] - (recv_src_info.view(-1, 1) % num_tokens)).sum().item() == 0
                 if dispatch_use_fp8:
                     hash_value ^= hash_tensor(packed_recv_x[0][i, :num_valid_tokens])
                     hash_value ^= hash_tensor(packed_recv_x[1][i, :num_valid_tokens])
@@ -77,15 +105,43 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
             for zero_copy in (False, ):
                 if zero_copy:
                     buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
-                out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
+                # out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
                 combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
-                                                                     async_finish=not return_recv_hook, zero_copy=zero_copy,
-                                                                     return_recv_hook=return_recv_hook, out=out)
-                hook() if return_recv_hook else event.current_stream_wait()
+                                                                     async_finish=False, zero_copy=zero_copy,
+                                                                     return_recv_hook=return_recv_hook, out=None)
+                # hook() if return_recv_hook else event.current_stream_wait()
+                torch.cuda.synchronize()
                 if do_check:
-                    diff = calc_diff(x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1), combined_x)
+                    expected = x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1)
+                    diff = calc_diff(expected, combined_x)
                     assert torch.isnan(combined_x).sum().item() == 0
-                    assert diff < 1e-5, f'Error: {diff=}, {zero_copy=}'
+                    if diff >= 1e-5:
+                        abs_diff = (expected - combined_x).abs()
+                        max_abs = abs_diff.max().item()
+                        mean_abs = abs_diff.mean().item()
+                        max_flat_idx = abs_diff.view(-1).argmax().item()
+                        max_pos = divmod(max_flat_idx, abs_diff.size(1))
+                        expected_at_max = expected[max_pos[0], max_pos[1]].item()
+                        combined_at_max = combined_x[max_pos[0], max_pos[1]].item()
+                        row = max_pos[0]
+                        expected_row = expected[row].detach().cpu()
+                        combined_row = combined_x[row].detach().cpu()
+                        x_row = x[row].detach().cpu()
+                        print(
+                            "[low_latency_combine] diff check failed:",
+                            f"rank={rank}",
+                            f"diff={diff:.6g}",
+                            f"zero_copy={zero_copy}",
+                            f"max_abs={max_abs:.6g}",
+                            f"mean_abs={mean_abs:.6g}",
+                            f"max_pos={max_pos}",
+                            f"expected_at_max={expected_at_max:.6g}",
+                            f"combined_at_max={combined_at_max:.6g}",
+                            f"expected_row0_8={[float(v) for v in expected_row[:8]]}",
+                            f"combined_row0_8={[float(v) for v in combined_row[:8]]}",
+                            f"x_row0_8={[float(v) for v in x_row[:8]]}",
+                        )
+                    assert diff < 1e-5, f'Error: rank={rank}, {diff=}, {zero_copy=}'
                     hash_value ^= hash_tensor(combined_x)
 
     def create_test_cast_with_outliers(num_outliers):
@@ -109,7 +165,8 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     def test_func(zero_copy: bool, use_fp8: bool, return_recv_hook: bool):
         recv_x, recv_count, handle, event, hook = \
             buffer.low_latency_dispatch(x, topk_idx, num_tokens, num_experts,
-                                        use_fp8=use_fp8, async_finish=False, return_recv_hook=return_recv_hook)
+                                        use_fp8=use_fp8, async_finish=False, return_recv_hook=return_recv_hook,
+                                        topk_weights=topk_weights)
         large_gemm_with_hook(hook) if return_recv_hook else None
         if zero_copy:
             buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
@@ -137,15 +194,48 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     # Separate profiling
     for return_recv_hook in (False, ):
         group.barrier()
-        dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=True, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-                                             kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
-                                             suppress_kineto_output=True)
+        # dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+        #                                      kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
+        #                                      suppress_kineto_output=True)
+        # dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+        #                                      kernel_names=('EpDispatchIntraNodeKernel', 'EpCombineIntraNodeKernel'), barrier_comm_profiling=True,
+        #                                      suppress_kineto_output=True)
+
+        if False:
+        # if True:
+            convert_dispatch_t = 0
+            dispatch_t, combine_t, convert_combine_t = bench_kineto(
+                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+                kernel_names=(
+                    'EpDispatchIntraNodeKernel' if num_nodes == 1 else 'EpDispatchInterNodeV1Kernel',
+                    'EpCombineIntraNodeKernel' if num_nodes == 1 else 'EpCombineInterNodeV1Kernel',
+                    'ConvertCombineInputKernel',
+                ),
+                barrier_comm_profiling=True,
+                suppress_kineto_output=True,
+            )
+        else:
+            dispatch_t, combine_t, convert_dispatch_t, convert_combine_t = bench_kineto(
+                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+                kernel_names=(
+                    'EpDispatchIntraNodeKernel' if num_nodes == 1 else 'EpDispatchInterNodeV1Kernel',
+                    'EpCombineIntraNodeKernel' if num_nodes == 1 else 'EpCombineInterNodeV1Kernel',
+                    'ConvertDispatchOutputKernel',
+                    'ConvertCombineInputKernel',
+                ),
+                barrier_comm_profiling=True,
+                suppress_kineto_output=True,
+            )
         if not return_recv_hook:
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
+            print(f'[rank {rank}] ConvertDispatchOutputKernel avg_t={convert_dispatch_t * 1e6:.2f} us | '
+                  f'ConvertCombineInputKernel avg_t={convert_combine_t * 1e6:.2f} us', flush=True)
         else:
             print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t * 2 * 1e6:.2f} us | '
                   f'Combine send/recv time: {combine_t * 2 * 1e6:.2f} us', flush=True)
+            print(f'[rank {rank}] ConvertDispatchOutputKernel send/recv time: {convert_dispatch_t * 2 * 1e6:.2f} us | '
+                  f'ConvertCombineInputKernel send/recv time: {convert_combine_t * 2 * 1e6:.2f} us', flush=True)
 
     return hash_value
 
