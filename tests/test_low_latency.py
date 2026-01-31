@@ -215,27 +215,33 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 suppress_kineto_output=True,
             )
         else:
-            dispatch_t, combine_t, convert_dispatch_t, convert_combine_t = bench_kineto(
+            multi_node = num_nodes > 1
+            convert_stand_alone = True
+            kernel_names = [
+                'EpDispatchInterNodeV1Kernel' if multi_node else 'EpDispatchIntraNodeKernel',
+                'EpCombineInterNodeV1Kernel' if multi_node else 'EpCombineIntraNodeKernel',
+            ] + (['EpDispatchCopyToStaging', 'EpCombineAll'] if multi_node else []) + ([
+                'ConvertDispatchOutputKernel',
+                'ConvertCombineInputKernel',
+            ] if convert_stand_alone else [])
+            timings = list(bench_kineto(
                 partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-                kernel_names=(
-                    'EpDispatchIntraNodeKernel' if num_nodes == 1 else 'EpDispatchInterNodeV1Kernel',
-                    'EpCombineIntraNodeKernel' if num_nodes == 1 else 'EpCombineInterNodeV1Kernel',
-                    'ConvertDispatchOutputKernel',
-                    'ConvertCombineInputKernel',
-                ),
+                kernel_names=tuple(kernel_names),
                 barrier_comm_profiling=True,
                 suppress_kineto_output=True,
-            )
+            ))
+            dispatch_t, combine_t = timings[0], timings[1]
         if not return_recv_hook:
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
-            print(f'[rank {rank}] ConvertDispatchOutputKernel avg_t={convert_dispatch_t * 1e6:.2f} us | '
-                  f'ConvertCombineInputKernel avg_t={convert_combine_t * 1e6:.2f} us', flush=True)
-        else:
-            print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t * 2 * 1e6:.2f} us | '
-                  f'Combine send/recv time: {combine_t * 2 * 1e6:.2f} us', flush=True)
-            print(f'[rank {rank}] ConvertDispatchOutputKernel send/recv time: {convert_dispatch_t * 2 * 1e6:.2f} us | '
-                  f'ConvertCombineInputKernel send/recv time: {convert_combine_t * 2 * 1e6:.2f} us', flush=True)
+            if multi_node:
+                dispatch_copy_t, combine_all_t = timings[2], timings[3]
+                print(f'[rank {rank}] EpDispatchCopyToStaging avg_t={dispatch_copy_t * 1e6:.2f} us | '
+                    f'EpCombineAll avg_t={combine_all_t * 1e6:.2f} us', flush=True)
+            if convert_stand_alone:
+                convert_dispatch_t, convert_combine_t = timings[-2], timings[-1]
+                print(f'[rank {rank}] ConvertDispatchOutputKernel avg_t={convert_dispatch_t * 1e6:.2f} us | '
+                    f'ConvertCombineInputKernel avg_t={convert_combine_t * 1e6:.2f} us', flush=True)
 
     return hash_value
 
