@@ -1,4 +1,3 @@
-import os
 import torch
 import torch.distributed as dist
 from typing import Callable, List, Tuple, Optional, Union
@@ -10,9 +9,9 @@ import mori.shmem
 # noinspection PyUnresolvedReferences
 from .utils import EventOverlap
 
-
 # Type aliases for compatibility
 Config = mori.ops.EpDispatchCombineConfig  # Use mori's config as Config
+
 
 class BufferROCm:
     """
@@ -96,7 +95,7 @@ class BufferROCm:
         self.explicitly_destroy = explicitly_destroy
         self.enable_shrink = enable_shrink
         self.multi_node = self.group_size > BufferROCm.MAX_GPU_PER_NODE
-        
+
         # Register default process group for mori shmem (required)
         assert dist.is_initialized(), "torch.distributed must be initialized before shmem init"
         world_group = dist.group.WORLD
@@ -104,21 +103,14 @@ class BufferROCm:
             torch._C._distributed_c10d._register_process_group("default", world_group)
         # Initialize SHMEM
         mori.shmem.shmem_torch_process_group_init("default")
-        
+
         # Create mori config and op using saved parameters from get_low_latency_rdma_size_hint
         self.mori_op = None
         self.mori_config = None
         self._mori_config_key = None
 
-    def _ensure_mori_op(self,
-                        num_tokens: int,
-                        hidden: int,
-                        num_experts: int,
-                        num_topk: int,
-                        kernel_type,
-                        block_num: int,
-                        warp_num_per_block: int,
-                        rdma_block_num: int) -> None:
+    def _ensure_mori_op(self, num_tokens: int, hidden: int, num_experts: int, num_topk: int, kernel_type, block_num: int,
+                        warp_num_per_block: int, rdma_block_num: int) -> None:
         config_key = (num_tokens, hidden, num_experts, num_topk, kernel_type, block_num, warp_num_per_block, rdma_block_num)
         if self.mori_op is not None and self._mori_config_key == config_key:
             return
@@ -156,7 +148,7 @@ class BufferROCm:
         Destroy the runtime and release resources.
         """
         assert self.explicitly_destroy, '`explicitly_destroy` flag must be set'
-        
+
         # Clean up mori resources
         self.mori_op = None
         self.mori_config = None
@@ -204,7 +196,7 @@ class BufferROCm:
         """
         # For mori, we don't need to return a size hint
         return 0
-        
+
         # Conservative estimate for mori
         return (num_max_dispatch_tokens_per_rank * hidden * num_ranks * 4) * 4  # 4 bytes per element
 
@@ -353,7 +345,7 @@ class BufferROCm:
         """
         # Not implemented for mori - use low_latency_dispatch instead
         raise NotImplementedError("dispatch not implemented for mori backend, use low_latency_dispatch instead")
-        
+
         # Placeholder to prevent syntax error
         if False:
             return self.internode_dispatch(x, handle, num_tokens_per_rank, num_tokens_per_rdma_rank, is_token_in_rank,
@@ -415,7 +407,7 @@ class BufferROCm:
         """
         # Not implemented for mori - use low_latency_combine instead
         raise NotImplementedError("combine not implemented for mori backend, use low_latency_combine instead")
-        
+
         # Placeholder to prevent syntax error
         if False:
             return self.internode_combine(x, handle, topk_weights, bias, config, previous_event, async_finish, allocate_on_comm_stream)
@@ -448,7 +440,7 @@ class BufferROCm:
         """
         # Not implemented for mori
         raise NotImplementedError("internode_dispatch not implemented for mori backend")
-        
+
         # Placeholder
         if False:
             assert topk_idx is None and topk_weights is None
@@ -496,7 +488,7 @@ class BufferROCm:
         """
         # Not implemented for mori
         raise NotImplementedError("internode_combine not implemented for mori backend")
-        
+
         # Placeholder
         if False:
             bias_0, bias_1 = BufferROCm._unpack_bias(bias)
@@ -513,7 +505,7 @@ class BufferROCm:
     def clean_low_latency_buffer(self, num_max_dispatch_tokens_per_rank: int, hidden: int, num_experts: int) -> None:
         """
         Clean the low-latency buffer for reuse.
-        
+
         Arguments:
             num_max_dispatch_tokens_per_rank: the maximum number of tokens to dispatch.
             hidden: the hidden dimension size.
@@ -549,10 +541,8 @@ class BufferROCm:
             unsupported.append('return_recv_hook')
         if unsupported:
             unsupported_str = ', '.join(unsupported)
-            raise NotImplementedError(
-                f'Mori backend does not support: {unsupported_str}. '
-                'Only FP16/BF16 synchronous dispatch is supported.'
-            )
+            raise NotImplementedError(f'Mori backend does not support: {unsupported_str}. '
+                                      'Only FP16/BF16 synchronous dispatch is supported.')
 
         num_tokens, hidden = x.shape
         num_topk = topk_idx.shape[1]
@@ -575,12 +565,12 @@ class BufferROCm:
             warp_num_per_block,
             rdma_block_num,
         )
-        
+
         convert_stand_alone = True
         if convert_stand_alone:
             # Call mori dispatch (topk_weights can be None)
             dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count = \
-                self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
+                self.mori_op.dispatch(x, topk_weights, None, topk_idx)
             packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
                 self.mori_op.convert_dispatch_output(
                     dispatch_out_x, dispatch_out_topk_idx, 80, 16
@@ -588,17 +578,17 @@ class BufferROCm:
         else:
             packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
                 self.mori_op.dispatch_standard_moe(x, topk_weights, None, topk_idx, 64, 16)
-        
+
         # Create handle for combine (store necessary info)
-        handle = (packed_recv_src_info, packed_recv_layout_range,
-                  num_max_dispatch_tokens_per_rank, x.size(1), num_experts)
-        tensors_to_record = (x, topk_idx, packed_recv_x, packed_recv_count, packed_recv_src_info,
-                             packed_recv_layout_range)
-        
+        handle = (packed_recv_src_info, packed_recv_layout_range, num_max_dispatch_tokens_per_rank, x.size(1), num_experts)
+        tensors_to_record = (x, topk_idx, packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range)
+
         # Create event and hook
         event = None
-        hook = lambda: None  # Dummy hook for compatibility
-        
+
+        def hook():
+            return None  # Dummy hook for compatibility
+
         return packed_recv_x, packed_recv_count, handle, EventOverlap(event, tensors_to_record if async_finish else None), hook
 
     # noinspection PyTypeChecker
@@ -626,10 +616,8 @@ class BufferROCm:
             unsupported.append('combine_wait_recv_cost_stats')
         if unsupported:
             unsupported_str = ', '.join(unsupported)
-            raise NotImplementedError(
-                f'Mori backend does not support: {unsupported_str}. '
-                'Only synchronous combine without extra outputs is supported.'
-            )
+            raise NotImplementedError(f'Mori backend does not support: {unsupported_str}. '
+                                      'Only synchronous combine without extra outputs is supported.')
 
         # Convert packed 3D input into mori combine input (2D)
         packed_recv_src_info = handle[0]
@@ -641,16 +629,15 @@ class BufferROCm:
 
         convert_stand_alone = True
         if convert_stand_alone:
-            combine_input = self.mori_op.convert_combine_input(
-                x, packed_recv_src_info, packed_recv_layout_range, 80, 16
-            )
+            combine_input = self.mori_op.convert_combine_input(x, packed_recv_src_info, packed_recv_layout_range, 80, 16)
             combined_x, _ = self.mori_op.combine(combine_input, None, topk_idx, combine_block_num, combine_warp_per_block)
         else:
             combined_x, _ = self.mori_op.combine_standard_moe(x, None, topk_idx, 64, 8)
 
         # Create event and hook
-        hook = lambda: None  # Dummy hook for compatibility
-        
+        def hook():
+            return None  # Dummy hook for compatibility
+
         return combined_x, None, hook
 
     # noinspection PyTypeChecker
@@ -669,7 +656,7 @@ class BufferROCm:
 
         Differences vs `low_latency_dispatch`:
             - Returns: explicitly returns `recv_topk_idx` and `recv_topk_weights` (the base API does not return these).
-        
+
         Note:
             - Requires mori to be compiled with `ENABLE_STANDARD_MOE_ADAPT=OFF`.
 
@@ -690,10 +677,8 @@ class BufferROCm:
             unsupported.append('return_recv_hook')
         if unsupported:
             unsupported_str = ', '.join(unsupported)
-            raise NotImplementedError(
-                f'Mori backend does not support: {unsupported_str}. '
-                'Only FP16/BF16 synchronous dispatch is supported.'
-            )
+            raise NotImplementedError(f'Mori backend does not support: {unsupported_str}. '
+                                      'Only FP16/BF16 synchronous dispatch is supported.')
 
         num_tokens, hidden = x.shape
         num_topk = topk_idx.shape[1]
@@ -716,21 +701,24 @@ class BufferROCm:
             warp_num_per_block,
             rdma_block_num,
         )
-        
+
         # dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count = \
-        #     self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
+        #     self.mori_op.dispatch(x, topk_weights, None, topk_idx)
         packed_recv_x, packed_recv_topk_weights, _, packed_recv_topk_idx, packed_recv_count = \
-            self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
+            self.mori_op.dispatch(x, topk_weights, None, topk_idx)
 
         # Create handle for combine (store necessary info)
         handle = (num_max_dispatch_tokens_per_rank, x.size(1), num_experts)
         tensors_to_record = (x, topk_idx, packed_recv_x, packed_recv_count, packed_recv_topk_idx, packed_recv_topk_weights)
-        
+
         # Create event and hook
         event = None
-        hook = lambda: None  # Dummy hook for compatibility
-        
-        return packed_recv_x, packed_recv_topk_idx, packed_recv_topk_weights, packed_recv_count, handle, EventOverlap(event, tensors_to_record if async_finish else None), hook
+
+        def hook():
+            return None  # Dummy hook for compatibility
+
+        return packed_recv_x, packed_recv_topk_idx, packed_recv_topk_weights, packed_recv_count, handle, EventOverlap(
+            event, tensors_to_record if async_finish else None), hook
 
     # noinspection PyTypeChecker
     def low_latency_combine_rocm(self, x: torch.Tensor, topk_idx: torch.Tensor, topk_weights: torch.Tensor,
@@ -743,7 +731,7 @@ class BufferROCm:
 
         Differences vs `low_latency_combine`:
             - `topk_weights` is Optional and can be omitted (passed as None); the base API requires it.
-        
+
         Note:
             - Requires mori to be compiled with `ENABLE_STANDARD_MOE_ADAPT=OFF`.
 
@@ -765,10 +753,8 @@ class BufferROCm:
             unsupported.append('combine_wait_recv_cost_stats')
         if unsupported:
             unsupported_str = ', '.join(unsupported)
-            raise NotImplementedError(
-                f'Mori backend does not support: {unsupported_str}. '
-                'Only synchronous combine without extra outputs is supported.'
-            )
+            raise NotImplementedError(f'Mori backend does not support: {unsupported_str}. '
+                                      'Only synchronous combine without extra outputs is supported.')
 
         if not self.multi_node:
             if zero_copy:
@@ -781,8 +767,9 @@ class BufferROCm:
         combined_x, _ = self.mori_op.combine(x, None, topk_idx, combine_block_num, combine_warp_per_block, use_external_inp_buf)
 
         # Create event and hook
-        hook = lambda: None  # Dummy hook for compatibility
-        
+        def hook():
+            return None  # Dummy hook for compatibility
+
         return combined_x, None, hook
 
     def low_latency_update_mask_buffer(self, rank_to_mask: int, mask: bool = False):
@@ -811,4 +798,3 @@ class BufferROCm:
         Get the raw registered RDMA buffer tensor for next low-latency combine.
         """
         return self.mori_op.get_registered_combine_input_buffer(self.mori_config.data_type)
-

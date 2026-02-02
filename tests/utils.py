@@ -195,11 +195,7 @@ def bench_kineto(fn,
                         torch.cuda.synchronize()
                         if dist.is_initialized():
                             try:
-                                device_ids = (
-                                    [torch.cuda.current_device()]
-                                    if torch.cuda.is_available()
-                                    else None
-                                )
+                                device_ids = ([torch.cuda.current_device()] if torch.cuda.is_available() else None)
                                 dist.barrier(device_ids=device_ids)
                             except Exception as e:
                                 try:

@@ -10,10 +10,12 @@ except Exception:  # pragma: no cover - fallback for ROCm/mori backend
     try:
         from mori.cpp import EventHandle
     except Exception:
+
         class EventHandle:
             """
             Fallback EventHandle backed by torch.cuda.Event for ROCm/mori backend.
             """
+
             def __init__(self) -> None:
                 self._event = torch.cuda.Event()
 

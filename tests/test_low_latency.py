@@ -8,8 +8,15 @@ import deep_ep
 from utils import init_dist, bench, bench_kineto, calc_diff, hash_tensor, per_token_cast_back
 
 
-def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
-              rank: int, num_ranks: int, group: dist.ProcessGroup, buffer: deep_ep.Buffer, seed: int = 0):
+def test_main(num_tokens: int,
+              hidden: int,
+              num_experts: int,
+              num_topk: int,
+              rank: int,
+              num_ranks: int,
+              group: dist.ProcessGroup,
+              buffer: deep_ep.Buffer,
+              seed: int = 0):
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
@@ -62,11 +69,8 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 num_valid_tokens = recv_count.item()
                 expected_tokens = (all_topk_idx == expert_id).sum().item()
                 if num_valid_tokens != expected_tokens:
-                    print("[dispatch_check] token count mismatch:",
-                          f"rank={rank}",
-                          f"expert_id={expert_id}",
-                          f"num_valid_tokens={num_valid_tokens}",
-                          f"expected_tokens={expected_tokens}",
+                    print("[dispatch_check] token count mismatch:", f"rank={rank}", f"expert_id={expert_id}",
+                          f"num_valid_tokens={num_valid_tokens}", f"expected_tokens={expected_tokens}",
                           f"packed_recv_count_head={packed_recv_count[:8].tolist()}")
                 assert num_valid_tokens == expected_tokens, f'{num_valid_tokens} != {expected_tokens}'
 
@@ -107,9 +111,14 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 if zero_copy:
                     buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
                 # out = torch.empty((num_tokens, hidden), dtype=torch.bfloat16, device='cuda')
-                combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
-                                                                     async_finish=False, zero_copy=zero_copy,
-                                                                     return_recv_hook=return_recv_hook, out=None)
+                combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
+                                                                     topk_idx,
+                                                                     topk_weights,
+                                                                     handle,
+                                                                     async_finish=False,
+                                                                     zero_copy=zero_copy,
+                                                                     return_recv_hook=return_recv_hook,
+                                                                     out=None)
                 # hook() if return_recv_hook else event.current_stream_wait()
                 torch.cuda.synchronize()
                 if do_check:
@@ -151,7 +160,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         assert tmp.abs().amax().item() <= 1
 
         # Create some amax outliers
-        for i in range(num_outliers):
+        for _i in range(num_outliers):
             tmp[random.randint(0, num_tokens - 1)] *= 1e3
         return tmp
 
@@ -171,8 +180,12 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         large_gemm_with_hook(hook) if return_recv_hook else None
         if zero_copy:
             buffer.get_next_low_latency_combine_buffer(handle)[:, :, :] = simulated_gemm_x
-        combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x, topk_idx, topk_weights, handle,
-                                                             zero_copy=zero_copy, return_recv_hook=return_recv_hook)
+        combined_x, event, hook = buffer.low_latency_combine(simulated_gemm_x,
+                                                             topk_idx,
+                                                             topk_weights,
+                                                             handle,
+                                                             zero_copy=zero_copy,
+                                                             return_recv_hook=return_recv_hook)
         large_gemm_with_hook(hook) if return_recv_hook else None
 
     # FP8 quantization is not yet supported.
@@ -189,8 +202,10 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
 
     # Dispatch + combine testing
     avg_t, min_t, max_t = bench(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=False))
-    print(f'[rank {rank}] Dispatch + combine bandwidth: {(num_dispatch_comm_bytes + num_combine_comm_bytes) / 1e9 / avg_t:.2f} GB/s, '
-          f'avg_t={avg_t * 1e6:.2f} us, min_t={min_t * 1e6:.2f} us, max_t={max_t * 1e6:.2f} us', flush=True)
+    print(
+        f'[rank {rank}] Dispatch + combine bandwidth: {(num_dispatch_comm_bytes + num_combine_comm_bytes) / 1e9 / avg_t:.2f} GB/s, '
+        f'avg_t={avg_t * 1e6:.2f} us, min_t={min_t * 1e6:.2f} us, max_t={max_t * 1e6:.2f} us',
+        flush=True)
 
     # Separate profiling
     for return_recv_hook in (False, ):
@@ -208,12 +223,13 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
             'ConvertDispatchOutputKernel',
             'ConvertCombineInputKernel',
         ] if convert_stand_alone else [])
-        timings = list(bench_kineto(
-            partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-            kernel_names=tuple(kernel_names),
-            barrier_comm_profiling=True,
-            suppress_kineto_output=True,
-        ))
+        timings = list(
+            bench_kineto(
+                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+                kernel_names=tuple(kernel_names),
+                barrier_comm_profiling=True,
+                suppress_kineto_output=True,
+            ))
         dispatch_t, combine_t = timings[0], timings[1]
         dispatch_copy_t, combine_all_t, convert_dispatch_t, convert_combine_t = 0, 0, 0, 0
         if not return_recv_hook:
@@ -223,10 +239,12 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 convert_dispatch_t, convert_combine_t = timings[-2], timings[-1]
             dispatch_total = dispatch_t + dispatch_copy_t + convert_dispatch_t
             combine_total = combine_t + combine_all_t + convert_combine_t
-            print(f'[rank {rank}] Dispatch bandwidth (total): {num_dispatch_comm_bytes / 1e9 / dispatch_total:.2f} GB/s, '
-                  f'avg_t={dispatch_total * 1e6:.2f} us (convert {convert_dispatch_t * 1e6:.2f} us) | '
-                  f'Combine bandwidth (total): {num_combine_comm_bytes / 1e9 / combine_total:.2f} GB/s, '
-                  f'avg_t={combine_total * 1e6:.2f} us (convert {convert_combine_t * 1e6:.2f} us)', flush=True)
+            print(
+                f'[rank {rank}] Dispatch bandwidth (total): {num_dispatch_comm_bytes / 1e9 / dispatch_total:.2f} GB/s, '
+                f'avg_t={dispatch_total * 1e6:.2f} us (convert {convert_dispatch_t * 1e6:.2f} us) | '
+                f'Combine bandwidth (total): {num_combine_comm_bytes / 1e9 / combine_total:.2f} GB/s, '
+                f'avg_t={combine_total * 1e6:.2f} us (convert {convert_combine_t * 1e6:.2f} us)',
+                flush=True)
 
     return hash_value
 
@@ -239,8 +257,7 @@ def test_loop(local_rank: int, num_local_ranks: int):
     num_rdma_bytes = deep_ep.Buffer.get_low_latency_rdma_size_hint(num_tokens, hidden, num_ranks, num_experts)
     if local_rank == 0:
         print(f'Allocating buffer size: {num_rdma_bytes / 1e6} MB ...', flush=True)
-    buffer = deep_ep.Buffer(group, num_rdma_bytes=num_rdma_bytes, low_latency_mode=True,
-                            num_qps_per_rank=num_experts // num_ranks)
+    buffer = deep_ep.Buffer(group, num_rdma_bytes=num_rdma_bytes, low_latency_mode=True, num_qps_per_rank=num_experts // num_ranks)
     test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer, seed=1)
 
     do_pressure_test = False
@@ -248,10 +265,12 @@ def test_loop(local_rank: int, num_local_ranks: int):
         if local_rank == 0:
             print(f'Testing with seed {seed} ...', flush=True)
         ref_hash = test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer, seed=seed)
-        for i in range(20):
-            assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer, seed=seed) == ref_hash, f'Error: seed={seed}'
+        for _i in range(20):
+            assert test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer,
+                             seed=seed) == ref_hash, f'Error: seed={seed}'
+
 
 if __name__ == '__main__':
     # TODO: you may modify NUMA binding for less CPU overhead
     num_processes = 8
-    torch.multiprocessing.spawn(test_loop, args=(num_processes,), nprocs=num_processes)
+    torch.multiprocessing.spawn(test_loop, args=(num_processes, ), nprocs=num_processes)
