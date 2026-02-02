@@ -195,42 +195,27 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     for return_recv_hook in (False, ):
         group.barrier()
         # dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-        #                                      kernel_names=('dispatch', 'combine'), barrier_comm_profiling=True,
-        #                                      suppress_kineto_output=True)
-        # dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
         #                                      kernel_names=('EpDispatchIntraNodeKernel', 'EpCombineIntraNodeKernel'), barrier_comm_profiling=True,
         #                                      suppress_kineto_output=True)
 
-        if False:
-        # if True:
-            convert_dispatch_t = 0
-            dispatch_t, combine_t, convert_combine_t = bench_kineto(
-                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-                kernel_names=(
-                    'EpDispatchIntraNodeKernel' if num_nodes == 1 else 'EpDispatchInterNodeV1Kernel',
-                    'EpCombineIntraNodeKernel' if num_nodes == 1 else 'EpCombineInterNodeV1Kernel',
-                    'ConvertCombineInputKernel',
-                ),
-                barrier_comm_profiling=True,
-                suppress_kineto_output=True,
-            )
-        else:
-            multi_node = num_nodes > 1
-            convert_stand_alone = True
-            kernel_names = [
-                'EpDispatchInterNodeV1Kernel' if multi_node else 'EpDispatchIntraNodeKernel',
-                'EpCombineInterNodeV1Kernel' if multi_node else 'EpCombineIntraNodeKernel',
-            ] + (['EpDispatchCopyToStaging', 'EpCombineAll'] if multi_node else []) + ([
-                'ConvertDispatchOutputKernel',
-                'ConvertCombineInputKernel',
-            ] if convert_stand_alone else [])
-            timings = list(bench_kineto(
-                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-                kernel_names=tuple(kernel_names),
-                barrier_comm_profiling=True,
-                suppress_kineto_output=True,
-            ))
-            dispatch_t, combine_t = timings[0], timings[1]
+        multi_node = num_nodes > 1
+        convert_stand_alone = True
+        # convert_stand_alone = False
+        kernel_names = [
+            'EpDispatchInterNodeV1Kernel' if multi_node else 'EpDispatchIntraNodeKernel',
+            'EpCombineInterNodeV1Kernel' if multi_node else 'EpCombineIntraNodeKernel',
+        ] + (['EpDispatchCopyToStaging', 'EpCombineAll'] if multi_node else []) + ([
+            'ConvertDispatchOutputKernel',
+            'ConvertCombineInputKernel',
+        ] if convert_stand_alone else [])
+        timings = list(bench_kineto(
+            partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+            kernel_names=tuple(kernel_names),
+            barrier_comm_profiling=True,
+            suppress_kineto_output=True,
+        ))
+        dispatch_t, combine_t = timings[0], timings[1]
+        dispatch_copy_t, combine_all_t, convert_dispatch_t, convert_combine_t = 0, 0, 0, 0
         if not return_recv_hook:
             print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
                   f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
@@ -242,6 +227,10 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 convert_dispatch_t, convert_combine_t = timings[-2], timings[-1]
                 print(f'[rank {rank}] ConvertDispatchOutputKernel avg_t={convert_dispatch_t * 1e6:.2f} us | '
                     f'ConvertCombineInputKernel avg_t={convert_combine_t * 1e6:.2f} us', flush=True)
+            dispatch_total = dispatch_t + dispatch_copy_t + convert_dispatch_t
+            combine_total = combine_t + combine_all_t + convert_combine_t
+            print(f'[rank {rank}] Dispatch bandwidth (total): {num_dispatch_comm_bytes / 1e9 / dispatch_total:.2f} GB/s, avg_t={dispatch_total * 1e6:.2f} us | '
+                  f'Combine bandwidth (total): {num_combine_comm_bytes / 1e9 / combine_total:.2f} GB/s, avg_t={combine_total * 1e6:.2f} us', flush=True)
 
     return hash_value
 

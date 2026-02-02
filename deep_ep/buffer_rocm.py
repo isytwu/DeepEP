@@ -574,17 +574,19 @@ class BufferROCm:
             rdma_block_num,
         )
         
-        # Call mori dispatch (topk_weights can be None)
-        dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count = \
-            self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
-        # print(f"[Rank {self.rank}] dispatch_out_count: {dispatch_out_count}")
-        packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
-            self.mori_op.convert_dispatch_output(
-                dispatch_out_x, dispatch_out_topk_idx, 80, 16
-            )
-        
-        # packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
-        #     self.mori_op.dispatch_standard_moe(x, topk_weights, None, topk_idx, 64, 16)
+        convert_stand_alone = True
+        if convert_stand_alone:
+            # Call mori dispatch (topk_weights can be None)
+            dispatch_out_x, dispatch_out_topk_weights, _, dispatch_out_topk_idx, dispatch_out_count = \
+                self.mori_op.dispatch(x, topk_weights, None, topk_idx)        
+            # print(f"[Rank {self.rank}] dispatch_out_count: {dispatch_out_count}")
+            packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
+                self.mori_op.convert_dispatch_output(
+                    dispatch_out_x, dispatch_out_topk_idx, 80, 16
+                )
+        else:
+            packed_recv_x, packed_recv_count, packed_recv_src_info, packed_recv_layout_range = \
+                self.mori_op.dispatch_standard_moe(x, topk_weights, None, topk_idx, 64, 16)
         
         # Create handle for combine (store necessary info)
         handle = (packed_recv_src_info, packed_recv_layout_range,
@@ -628,17 +630,20 @@ class BufferROCm:
         # Convert packed 3D input into mori combine input (2D)
         packed_recv_src_info = handle[0]
         packed_recv_layout_range = handle[1]
-        combine_input = self.mori_op.convert_combine_input(
-            x, packed_recv_src_info, packed_recv_layout_range, 80, 16
-        )
-
         if self.group_size <= BufferROCm.MAX_GPU_PER_NODE:
             combine_block_num, combine_warp_per_block = 64, 4
         else:
             combine_block_num, combine_warp_per_block = 64, 8
 
-        combined_x, _ = self.mori_op.combine(combine_input, None, topk_idx, combine_block_num, combine_warp_per_block)
-        
+        convert_stand_alone = True
+        if convert_stand_alone:
+            combine_input = self.mori_op.convert_combine_input(
+                x, packed_recv_src_info, packed_recv_layout_range, 80, 16
+            )
+            combined_x, _ = self.mori_op.combine(combine_input, None, topk_idx, combine_block_num, combine_warp_per_block)
+        else:
+            combined_x, _ = self.mori_op.combine_standard_moe(x, None, topk_idx, 64, 8)
+
         # Create event and hook
         hook = lambda: None  # Dummy hook for compatibility
         
