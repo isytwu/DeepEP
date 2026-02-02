@@ -13,6 +13,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
     torch.manual_seed(seed + rank)
     random.seed(seed + rank)
     num_nodes = int(os.getenv('WORLD_SIZE', 1))
+    multi_node = num_nodes > 1
 
     assert num_experts % num_ranks == 0
     num_local_experts = num_experts // num_ranks
@@ -198,7 +199,6 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         #                                      kernel_names=('EpDispatchIntraNodeKernel', 'EpCombineIntraNodeKernel'), barrier_comm_profiling=True,
         #                                      suppress_kineto_output=True)
 
-        multi_node = num_nodes > 1
         convert_stand_alone = True
         # convert_stand_alone = False
         kernel_names = [
