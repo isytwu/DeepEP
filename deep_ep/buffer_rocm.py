@@ -668,9 +668,11 @@ class BufferROCm:
         AITER fused MoE expectations.
 
         Differences vs `low_latency_dispatch`:
-            - Arguments: requires `topk_weights` input (the base API does not accept it).
             - Returns: explicitly returns `recv_topk_idx` and `recv_topk_weights` (the base API does not return these).
         
+        Note:
+            - Requires mori to be compiled with `ENABLE_STANDARD_MOE_ADAPT=OFF`.
+
         See also:
             - `low_latency_dispatch` for the base CUDA variant and full documentation.
         """
@@ -742,6 +744,9 @@ class BufferROCm:
         Differences vs `low_latency_combine`:
             - `topk_weights` is Optional and can be omitted (passed as None); the base API requires it.
         
+        Note:
+            - Requires mori to be compiled with `ENABLE_STANDARD_MOE_ADAPT=OFF`.
+
         See also:
             - `low_latency_combine` for the base CUDA variant and full documentation.
         """
@@ -766,7 +771,10 @@ class BufferROCm:
             )
 
         if not self.multi_node:
-            combine_block_num, combine_warp_per_block = 64, 4
+            if zero_copy:
+                combine_block_num, combine_warp_per_block = 64, 4
+            else:
+                combine_block_num, combine_warp_per_block = 64, 16
         else:
             combine_block_num, combine_warp_per_block = 64, 8
         use_external_inp_buf = 0 if zero_copy else 1

@@ -193,7 +193,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         group.barrier()
         if multi_node:
             dispatch_t, combine_t, dispatch_copy_t, combine_all_t = bench_kineto(
-                partial(test_func, zero_copy=False if multi_node else True, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+                partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
                 kernel_names=(
                     "EpDispatchInterNodeV1Kernel",
                     "EpCombineInterNodeV1Kernel",
@@ -212,7 +212,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t * 2 * 1e6:.2f} us | '
                     f'Combine send/recv time: {combine_t * 2 * 1e6:.2f} us', flush=True)
         else:
-            dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False if multi_node else True, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+            dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=True, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
                                                 kernel_names=("EpDispatchIntraNodeKernel", "EpCombineIntraNodeKernel"), barrier_comm_profiling=True,
                                                 suppress_kineto_output=True)
             if not return_recv_hook:
@@ -234,7 +234,7 @@ def test_loop(local_rank: int, num_local_ranks: int):
     if local_rank == 0:
         print(f'Allocating buffer size: {num_rdma_bytes / 1e6} MB ...', flush=True)
     buffer = deep_ep.Buffer(group, num_rdma_bytes=num_rdma_bytes, low_latency_mode=True,
-                            num_qps_per_rank=num_experts // num_ranks)
+                            num_qps_per_rank=4)
     test_main(num_tokens, hidden, num_experts, num_topk, rank, num_ranks, group, buffer, seed=1)
 
     do_pressure_test = False

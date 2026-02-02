@@ -217,16 +217,10 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
         dispatch_t, combine_t = timings[0], timings[1]
         dispatch_copy_t, combine_all_t, convert_dispatch_t, convert_combine_t = 0, 0, 0, 0
         if not return_recv_hook:
-            # print(f'[rank {rank}] Dispatch bandwidth: {num_dispatch_comm_bytes / 1e9 / dispatch_t:.2f} GB/s, avg_t={dispatch_t * 1e6:.2f} us | '
-            #       f'Combine bandwidth: {num_combine_comm_bytes / 1e9 / combine_t:.2f} GB/s, avg_t={combine_t * 1e6:.2f} us', flush=True)
             if multi_node:
                 dispatch_copy_t, combine_all_t = timings[2], timings[3]
-                # print(f'[rank {rank}] EpDispatchCopyToStaging avg_t={dispatch_copy_t * 1e6:.2f} us | '
-                #     f'EpCombineAll avg_t={combine_all_t * 1e6:.2f} us', flush=True)
             if convert_stand_alone:
                 convert_dispatch_t, convert_combine_t = timings[-2], timings[-1]
-                # print(f'[rank {rank}] ConvertDispatchOutputKernel avg_t={convert_dispatch_t * 1e6:.2f} us | '
-                #     f'ConvertCombineInputKernel avg_t={convert_combine_t * 1e6:.2f} us', flush=True)
             dispatch_total = dispatch_t + dispatch_copy_t + convert_dispatch_t
             combine_total = combine_t + combine_all_t + convert_combine_t
             print(f'[rank {rank}] Dispatch bandwidth (total): {num_dispatch_comm_bytes / 1e9 / dispatch_total:.2f} GB/s, '

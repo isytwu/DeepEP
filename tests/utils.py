@@ -191,6 +191,26 @@ def bench_kineto(fn,
                     dist.all_reduce(torch.ones(1, dtype=torch.float, device='cuda'))
                 for _ in range(num_tests):
                     fn()
+                    if True:
+                        torch.cuda.synchronize()
+                        if dist.is_initialized():
+                            try:
+                                device_ids = (
+                                    [torch.cuda.current_device()]
+                                    if torch.cuda.is_available()
+                                    else None
+                                )
+                                dist.barrier(device_ids=device_ids)
+                            except Exception as e:
+                                try:
+                                    rank = dist.get_rank()
+                                except Exception:
+                                    rank = -1
+                                if rank == 0:
+                                    print(
+                                        f"[Rank {rank}] Warning: per-iteration barrier failed - {e}",
+                                        flush=True,
+                                    )
                 torch.cuda.synchronize()
                 prof.step()
 
