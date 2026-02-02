@@ -31,15 +31,15 @@ def test_main(num_tokens: int,
 
     x = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * (rank - rank_offset)
     x[:, -128:] = torch.arange(num_tokens, device='cuda').to(torch.bfloat16).view(-1, 1)
-    # x = torch.ones((num_tokens, hidden), dtype=torch.bfloat16, device='cuda') * (rank + 1)
     scores = torch.randn((num_tokens, num_experts), dtype=torch.float32, device='cuda').abs() + 1
     topk_idx = torch.topk(scores, num_topk, dim=-1, largest=True, sorted=True)[1]
     topk_idx = topk_idx.to(deep_ep.topk_idx_t)
     topk_weights = torch.randn((num_tokens, num_topk), dtype=torch.float32, device='cuda').abs()
-    # topk_weights = torch.ones((num_tokens, num_topk), dtype=torch.float32, device='cuda')
 
     # Randomly mask some positions
-    for i in range(10):
+    # NOTE: Mori backend does not support topk_idx = -1 (masked positions).
+    # This may cause incorrect results, although current tests pass.
+    for _i in range(10):
         topk_idx[random.randint(0, num_tokens - 1), random.randint(0, num_topk - 1)] = -1
 
     # Check dispatch correctness
@@ -48,7 +48,7 @@ def test_main(num_tokens: int,
     for return_recv_hook in (False, ):
         for dispatch_use_fp8 in (False, ):
             # num_times += 1
-            for i in range((num_times % 2) + 1):
+            for _i in range((num_times % 2) + 1):
                 packed_recv_x, packed_recv_count, handle, event, hook = \
                     buffer.low_latency_dispatch(x, topk_idx, num_tokens, num_experts, use_fp8=dispatch_use_fp8,
                                                 async_finish=False, return_recv_hook=return_recv_hook,
@@ -125,32 +125,6 @@ def test_main(num_tokens: int,
                     expected = x * topk_weights.masked_fill(topk_idx == -1, 0).sum(dim=1).view(-1, 1)
                     diff = calc_diff(expected, combined_x)
                     assert torch.isnan(combined_x).sum().item() == 0
-                    if diff >= 1e-5:
-                        abs_diff = (expected - combined_x).abs()
-                        max_abs = abs_diff.max().item()
-                        mean_abs = abs_diff.mean().item()
-                        max_flat_idx = abs_diff.view(-1).argmax().item()
-                        max_pos = divmod(max_flat_idx, abs_diff.size(1))
-                        expected_at_max = expected[max_pos[0], max_pos[1]].item()
-                        combined_at_max = combined_x[max_pos[0], max_pos[1]].item()
-                        row = max_pos[0]
-                        expected_row = expected[row].detach().cpu()
-                        combined_row = combined_x[row].detach().cpu()
-                        x_row = x[row].detach().cpu()
-                        print(
-                            "[low_latency_combine] diff check failed:",
-                            f"rank={rank}",
-                            f"diff={diff:.6g}",
-                            f"zero_copy={zero_copy}",
-                            f"max_abs={max_abs:.6g}",
-                            f"mean_abs={mean_abs:.6g}",
-                            f"max_pos={max_pos}",
-                            f"expected_at_max={expected_at_max:.6g}",
-                            f"combined_at_max={combined_at_max:.6g}",
-                            f"expected_row0_8={[float(v) for v in expected_row[:8]]}",
-                            f"combined_row0_8={[float(v) for v in combined_row[:8]]}",
-                            f"x_row0_8={[float(v) for v in x_row[:8]]}",
-                        )
                     assert diff < 1e-5, f'Error: rank={rank}, {diff=}, {zero_copy=}'
                     hash_value ^= hash_tensor(combined_x)
 
@@ -210,12 +184,8 @@ def test_main(num_tokens: int,
     # Separate profiling
     for return_recv_hook in (False, ):
         group.barrier()
-        # dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
-        #                                      kernel_names=('EpDispatchIntraNodeKernel', 'EpCombineIntraNodeKernel'), barrier_comm_profiling=True,
-        #                                      suppress_kineto_output=True)
 
         convert_stand_alone = True
-        # convert_stand_alone = False
         kernel_names = [
             'EpDispatchInterNodeV1Kernel' if multi_node else 'EpDispatchIntraNodeKernel',
             'EpCombineInterNodeV1Kernel' if multi_node else 'EpCombineIntraNodeKernel',

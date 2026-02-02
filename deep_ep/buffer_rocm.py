@@ -13,7 +13,7 @@ from .utils import EventOverlap
 Config = mori.ops.EpDispatchCombineConfig  # Use mori's config as Config
 
 
-class BufferROCm:
+class Buffer:
     """
     The core expert-parallel (EP) communication buffers for Mixture of Experts (MoE) model, which supports:
         - high-throughput intranode all-to-all (dispatch and combine, using NVLink)
@@ -94,7 +94,7 @@ class BufferROCm:
         self.low_latency_mode = low_latency_mode
         self.explicitly_destroy = explicitly_destroy
         self.enable_shrink = enable_shrink
-        self.multi_node = self.group_size > BufferROCm.MAX_GPU_PER_NODE
+        self.multi_node = self.group_size > Buffer.MAX_GPU_PER_NODE
 
         # Register default process group for mori shmem (required)
         assert dist.is_initialized(), "torch.distributed must be initialized before shmem init"
@@ -118,7 +118,7 @@ class BufferROCm:
         num_local_experts = num_experts // self.group_size
 
         # TODO: detect multi-node setup and tune kernel settings
-        gpu_per_node = min(self.group_size, BufferROCm.MAX_GPU_PER_NODE)
+        gpu_per_node = min(self.group_size, Buffer.MAX_GPU_PER_NODE)
 
         self.mori_config = mori.ops.EpDispatchCombineConfig(
             data_type=torch.bfloat16,
@@ -168,7 +168,7 @@ class BufferROCm:
         """
 
         # assert new_num_sms % 2 == 0, 'The SM count must be even'
-        BufferROCm.num_sms = new_num_sms
+        Buffer.num_sms = new_num_sms
 
     @staticmethod
     def capture() -> EventOverlap:
@@ -347,7 +347,11 @@ class BufferROCm:
         raise NotImplementedError("dispatch not implemented for mori backend, use low_latency_dispatch instead")
 
         # Placeholder to prevent syntax error
-        if False:
+        # Default config
+        config = self.get_dispatch_config(self.group_size) if config is None else config
+
+        # Internode
+        if self.runtime.get_num_rdma_ranks() > 1:
             return self.internode_dispatch(x, handle, num_tokens_per_rank, num_tokens_per_rdma_rank, is_token_in_rank,
                                            num_tokens_per_expert, topk_idx, topk_weights, expert_alignment, num_worst_tokens, config,
                                            previous_event, async_finish, allocate_on_comm_stream)
@@ -409,7 +413,11 @@ class BufferROCm:
         raise NotImplementedError("combine not implemented for mori backend, use low_latency_combine instead")
 
         # Placeholder to prevent syntax error
-        if False:
+        # Default config
+        config = self.get_combine_config(self.group_size) if config is None else config
+
+        # Internode
+        if self.runtime.get_num_rdma_ranks() > 1:
             return self.internode_combine(x, handle, topk_weights, bias, config, previous_event, async_finish, allocate_on_comm_stream)
 
         # NOTES: the second `_` is for the sending side, so we should use the third one
@@ -442,7 +450,11 @@ class BufferROCm:
         raise NotImplementedError("internode_dispatch not implemented for mori backend")
 
         # Placeholder
-        if False:
+        assert config is not None
+
+        # Launch the kernel with cached or non-cached mode
+        x, x_scales = x if isinstance(x, tuple) else (x, None)
+        if handle is not None:
             assert topk_idx is None and topk_weights is None
             is_token_in_rank, \
                 rdma_channel_prefix_matrix, gbl_channel_prefix_matrix, \
@@ -490,8 +502,14 @@ class BufferROCm:
         raise NotImplementedError("internode_combine not implemented for mori backend")
 
         # Placeholder
-        if False:
-            bias_0, bias_1 = BufferROCm._unpack_bias(bias)
+        assert config is not None
+
+        # Unpack handle and bias
+        is_combined_token_in_rank, \
+            _, _, \
+            rdma_channel_prefix_matrix, rdma_rank_prefix_sum, gbl_channel_prefix_matrix, gbl_rank_prefix_sum, \
+            src_meta, send_rdma_head, send_nvl_head = handle
+        bias_0, bias_1 = Buffer._unpack_bias(bias)
 
         # Launch the kernel
         combined_x, combined_topk_weights, event = self.runtime.internode_combine(x, topk_weights, bias_0, bias_1, src_meta,
@@ -504,12 +522,15 @@ class BufferROCm:
 
     def clean_low_latency_buffer(self, num_max_dispatch_tokens_per_rank: int, hidden: int, num_experts: int) -> None:
         """
-        Clean the low-latency buffer for reuse.
+        As low-latency kernels require part of the buffer to be zero-initialized, so it is vital to clean the buffer
+            if the buffer is dirty at some time.
+        For example, after running the normal dispatch/combine, you must run this function before executing any
+            low-latency kernel.
 
         Arguments:
-            num_max_dispatch_tokens_per_rank: the maximum number of tokens to dispatch.
-            hidden: the hidden dimension size.
-            num_experts: the number of experts.
+            num_max_dispatch_tokens_per_rank: the maximum number of tokens to dispatch, all the ranks must hold the same value.
+            hidden: the hidden dimension of each token.
+            num_experts: the number of all experts.
         """
         # For mori, nothing to clean
         pass
@@ -774,14 +795,23 @@ class BufferROCm:
 
     def low_latency_update_mask_buffer(self, rank_to_mask: int, mask: bool = False):
         """
-        Mask (unmask) a rank during communication (dispatch, combine, and clean).
+        Mask (unmask) a rank during communication (dispatch, combine, and clean)
+
+        Arguments:
+            rank: the rank to mask (unmask).
+            mask: if True, will mask the rank (do not recvfrom/sendto the rank), otherwise will unmask the rank.
+
         Not implemented for mori backend.
         """
         raise NotImplementedError("low_latency_update_mask_buffer not implemented for mori backend")
 
     def low_latency_query_mask_buffer(self, mask_status: torch.Tensor):
         """
-        Query the mask status of all ranks.
+        Query the mask status of all ranks
+
+        Arguments:
+            mask_status: `[num_ranks]` with `torch.int`, the mask status of each rank. `1` means mask and `0` means unmasked.
+
         Not implemented for mori backend.
         """
         raise NotImplementedError("low_latency_query_mask_buffer not implemented for mori backend")
@@ -795,6 +825,14 @@ class BufferROCm:
 
     def get_next_low_latency_combine_buffer(self, handle: object):
         """
-        Get the raw registered RDMA buffer tensor for next low-latency combine.
+        Get the raw registered RDMA buffer tensor for next low-latency combine, so that the next combine kernel can skip the copying.
+
+        Arguments:
+            handle: the communication handle given by the `dispatch` function.
+
+        Returns:
+            buffer: the raw RDMA low-latency buffer as a BF16 PyTorch tensor with shape
+                `[num_local_experts, num_ranks * num_max_dispatch_tokens_per_rank, hidden]`, you should fill this buffer
+                by yourself.
         """
         return self.mori_op.get_registered_combine_input_buffer(self.mori_config.data_type)

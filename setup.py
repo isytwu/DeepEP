@@ -14,7 +14,7 @@ def is_rocm_environment():
         import torch
         if hasattr(torch.version, 'hip') and torch.version.hip is not None:
             return True
-    except:
+    except Exception:
         pass
     return bool(os.environ.get('ROCM_PATH') or os.environ.get('HIP_PATH'))
 

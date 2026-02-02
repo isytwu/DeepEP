@@ -1,7 +1,7 @@
 import os
 import torch
 
-from .utils import EventOverlap
+from .utils import EventOverlap as EventOverlap
 
 
 def _detect_backend():
@@ -21,9 +21,9 @@ def _detect_backend():
 _backend = _detect_backend()
 
 if _backend == 'rocm':
-    from .buffer_rocm import BufferROCm as Buffer, Config
-    from mori.cpp import topk_idx_t
+    from .buffer_rocm import Buffer as Buffer, Config as Config
+    from mori.cpp import topk_idx_t as topk_idx_t
 else:
-    from .buffer import Buffer
+    from .buffer import Buffer as Buffer
     # noinspection PyUnresolvedReferences
-    from deep_ep_cpp import Config, topk_idx_t
+    from deep_ep_cpp import Config as Config, topk_idx_t as topk_idx_t

@@ -40,7 +40,7 @@ def test_main(num_tokens: int,
 
     # Randomly mask some positions
     if not fused_moe_adaption:
-        for i in range(10):
+        for _i in range(10):
             topk_idx[random.randint(0, num_tokens - 1), random.randint(0, num_topk - 1)] = -1
 
     dedup_topk_idx = topk_idx.clone()
@@ -61,7 +61,7 @@ def test_main(num_tokens: int,
     for return_recv_hook in (False, ):
         for dispatch_use_fp8 in (False, ):
             # num_times += 1
-            for i in range((num_times % 2) + 1):
+            for _i in range((num_times % 2) + 1):
                 if fused_moe_adaption:
                     packed_recv_x, packed_recv_topk_idx, packed_recv_topk_weights, packed_recv_count, handle, event, hook = \
                         buffer.low_latency_dispatch_rocm(x, topk_idx, num_tokens, num_experts, use_fp8=dispatch_use_fp8,
