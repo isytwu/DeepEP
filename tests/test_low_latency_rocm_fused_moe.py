@@ -212,7 +212,7 @@ def test_main(num_tokens: int, hidden: int, num_experts: int, num_topk: int,
                 print(f'[rank {rank}] Dispatch send/recv time: {dispatch_t * 2 * 1e6:.2f} us | '
                     f'Combine send/recv time: {combine_t * 2 * 1e6:.2f} us', flush=True)
         else:
-            dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=True, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
+            dispatch_t, combine_t = bench_kineto(partial(test_func, zero_copy=False, use_fp8=bench_use_fp8, return_recv_hook=return_recv_hook),
                                                 kernel_names=("EpDispatchIntraNodeKernel", "EpCombineIntraNodeKernel"), barrier_comm_profiling=True,
                                                 suppress_kineto_output=True)
             if not return_recv_hook:
