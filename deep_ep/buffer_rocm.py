@@ -116,8 +116,6 @@ class Buffer:
             return
 
         num_local_experts = num_experts // self.group_size
-
-        # TODO: detect multi-node setup and tune kernel settings
         gpu_per_node = min(self.group_size, Buffer.MAX_GPU_PER_NODE)
 
         self.mori_config = mori.ops.EpDispatchCombineConfig(

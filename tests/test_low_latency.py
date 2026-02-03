@@ -47,6 +47,8 @@ def test_main(num_tokens: int,
     hash_value, num_times = 0, 0
     for return_recv_hook in (False, ):
         for dispatch_use_fp8 in (False, ):
+            # NOTE: Mori requires dispatch and combine to be called in pairs.
+            # Cannot call dispatch multiple times without a matching combine.
             # num_times += 1
             for _i in range((num_times % 2) + 1):
                 packed_recv_x, packed_recv_count, handle, event, hook = \
